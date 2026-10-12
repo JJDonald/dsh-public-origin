@@ -19,43 +19,45 @@ DSH Web 部署在 VPS 上、通过 `https://your.domain` 访问时，一些插�
 
 ## 安全边界
 
-所有**经过反向代理**的请求先经过 DSH 自身的 `connection.requestRejection`，也就是 `/api` 使用的同一套检查：
+插件先判断请求是**本机直连**还是**经过反向代理**：
 
-- `--trusted-host` 白名单
-- 跨站请求标记（`Sec-Fetch-Site`）和 Origin 同源校验
-- DSH 签名的浏览器登录 Cookie
+- **本机直连**：socket 对端地址属于 127/8 或 `::1`，并且请求不带任何 `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host` / `X-Real-IP` / `Forwarded` 头。这类请求原样交给原插件，由它自己的规则决定，行为和没装本插件时完全一样。
+- **其他请求**：先经过 DSH 自身的 `connection.requestRejection`，也就是 `/api` 使用的同一套检查：
+  - `--trusted-host` 白名单
+  - 跨站请求标记（`Sec-Fetch-Site`）和 Origin 同源校验
+  - DSH 签名的浏览器登录 Cookie
 
-未登录返回 401，Host 或 Origin 不可信返回 403。只有通过检查的请求才会被改写为回环身份。
+  未登录返回 401，Host 或 Origin 不可信返回 403。只有通过检查的请求才会被改写为回环身份。
 
-### 为什么不能靠 `Host` 判断「本地」（v0.2.1 修复）
+判断时不看 `Host`。`Host` 由客户端控制，不能作为「来自本机」的依据。
 
-早期实现用 `Host` 是否回环来决定放行，这是**可被绕过的认证漏洞**：`Host` 由客户端完全控制，而反代如果按 README 旧例原样透传 `Host`（`proxy_set_header Host $host`），任何公网访问者只要发 `Host: 127.0.0.1` 就会被当成回环请求，**跳过 `admit()`**，无需登录即可：
+附带效果：bili 原本未登录也能读取的 `/bili/origin`，在公网访问时也要求先登录。
 
-- 读写 `/api/dsh-skill-explorer/*`（可创建技能文件，内容会进入模型上下文）
+### v0.2.1 修复的认证绕过
+
+v0.1.0 用 `Host` 是否为回环地址来决定是否跳过登录检查。如果反向代理原样转发客户端的 `Host`（例如 nginx 的 `proxy_set_header Host $host`），公网访问者只要发送 `Host: 127.0.0.1`，就能不登录直接：
+
+- 读写 `/api/dsh-skill-explorer/*`（可以创建技能文件，内容会进入模型上下文）
 - 读取 `/dsh-better-reasoning-effort/headers-config` 等诊断数据
-- 让 `/bili/origin` 泄漏回环 origin `http://127.0.0.1:<port>`
+- 从 `/bili/origin` 读到 bili 的回环地址
 
-现在判定「本地直连」看**请求有没有经过反代**：socket 对端地址属于 127/8 或 `::1`，**且**不带任何 `X-Forwarded-*` / `X-Real-IP` / `Forwarded` 标记。反代必然会写这些头，且 `proxy_set_header` 是**替换**而非追加，所以远端无法伪造。本地直连请求完全不改写，交还各插件自己的信任规则决定：
+**使用 v0.1.0 的部署请升级到 v0.2.1 或更高版本。**
 
-- `dsh-better-reasoning-effort`：回环**或任意 IP 字面量** Host；
-- `@linxin666/dsh-client-ui-skill-explorer`：socket 回环**且** Host 回环（按 IP 访问本就 403，属其自身设计）。
-
-这样既堵住绕过，又不会像只认回环 Host 那样误伤 IP 字面量访问。
-
-### 附带效果
-
-bili 原本未登录也能读取的 `/bili/origin`，在公网访问时也要求先登录。
+v0.1.0 只认回环 `Host` 还带来一个副作用：本机用 IP 地址访问时，reasoning-effort 的路由从 200 变成了 403。这个问题在 v0.2.1 中也一并恢复。
 
 ## 前提
 
 - DSH 以 `--trusted-host <你的域名>` 启动，这也是 DSH 本身在反代后正常工作的前提。
-- **反向代理必须固定 `Host` 为公网域名，不要透传客户端 `Host`**（v0.2.1 起为硬性要求），并设置 `X-Forwarded-Proto`。nginx 示例：
+- DSH 只监听回环地址（如 `--host 127.0.0.1`），公网只能经反向代理访问。
+- **反向代理必须设置转发头**，至少设置 `X-Forwarded-For` 或 `X-Real-IP` 中的一个，并设置 `X-Forwarded-Proto`。插件靠这些头识别经过反代的请求。nginx 不会自动添加它们；如果都没设置，公网请求会被当作本机直连，插件对公网访问不起作用。`X-Forwarded-Proto` 还用来生成 bili 页面的 `https://` 地址。
+- 建议把 `Host` 固定为公网域名（`$server_name`），不要原样转发客户端的 `Host`（`$host`），作为纵深防御。
+
+nginx 示例：
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:3080;
     proxy_http_version 1.1;
-    # 不要用 $host：它等于客户端可伪造的 Host，会让远端冒充回环访问
     proxy_set_header Host $server_name;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -66,7 +68,7 @@ location / {
 }
 ```
 
-`$server_name` 在该 server 块中就是公网域名，与浏览器发出的 `Host` 相同，因此 DSH 签名 Cookie 的 authority 不变，现有登录不受影响。
+`$server_name` 在这个 server 块中就是公网域名，和浏览器发出的 `Host` 相同，所以 DSH 登录 Cookie 绑定的地址不变，已有登录不受影响。前提是 server 块里只有一个 `server_name`，且它就是浏览器访问的域名。
 
 ## 安装
 
@@ -108,7 +110,7 @@ dsh plugin --profile web remove dsh-public-origin
 
 ## 兼容性
 
-- 在 DSH **0.2.0-rc.2** 上部署使用，搭配 billion-context 0.1.192/0.1.194、dsh-better-reasoning-effort 0.5.2、dsh-client-ui-skill-explorer 0.4.6。
+- 当前版本 **0.2.1**。在 DSH **0.2.0-rc.2** 上部署使用，搭配 billion-context 0.1.192/0.1.194、dsh-better-reasoning-effort 0.5.2、dsh-client-ui-skill-explorer 0.4.6。
 - Node.js **≥22**。
 - 插件依赖 DSH 内部的 `webServer.match` 和 `connection.requestRejection`，以及 bili 的 `/bili/origin` 路由。上游改动这些接口后可能需要适配。
 - 非官方插件。
