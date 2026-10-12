@@ -1,0 +1,39 @@
+{
+  "name": "dsh-public-origin",
+  "version": "0.1.0",
+  "description": "Lets loopback-assuming DSH plugins (bili, reasoning-effort, skill-explorer) work when the Web UI is served on a public domain behind a reverse proxy, gated by dsh's own login.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JJDonald/dsh-public-origin.git"
+  },
+  "homepage": "https://github.com/JJDonald/dsh-public-origin",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "reverse-proxy"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.2"
+  }
+}

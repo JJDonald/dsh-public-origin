@@ -1,0 +1,6 @@
+# Bundle patch: mount the plugin row. Optional config:
+#   localize: path prefixes whose loopback-only routes accept admitted public
+#   requests (default: /dsh-better-reasoning-effort, /api/dsh-skill-explorer).
+- insert:
+    - id: public-origin
+      name: 'dsh-public-origin'
