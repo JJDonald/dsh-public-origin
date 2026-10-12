@@ -19,32 +19,54 @@ DSH Web 部署在 VPS 上、通过 `https://your.domain` 访问时，一些插�
 
 ## 安全边界
 
-所有非回环请求先经过 DSH 自身的 `connection.requestRejection`，也就是 `/api` 使用的同一套检查：
+所有**经过反向代理**的请求先经过 DSH 自身的 `connection.requestRejection`，也就是 `/api` 使用的同一套检查：
 
 - `--trusted-host` 白名单
 - 跨站请求标记（`Sec-Fetch-Site`）和 Origin 同源校验
 - DSH 签名的浏览器登录 Cookie
 
-未登录返回 401，Host 或 Origin 不可信返回 403。只有通过检查的请求才会被改写为回环身份。从回环地址发来的请求不做任何改动，本机访问的行为与安装前相同。
+未登录返回 401，Host 或 Origin 不可信返回 403。只有通过检查的请求才会被改写为回环身份。
 
-这样做还有一个附带效果：bili 原本未登录也能读取的 `/bili/origin`，在公网访问时也要求先登录。
+### 为什么不能靠 `Host` 判断「本地」（v0.2.1 修复）
+
+早期实现用 `Host` 是否回环来决定放行，这是**可被绕过的认证漏洞**：`Host` 由客户端完全控制，而反代如果按 README 旧例原样透传 `Host`（`proxy_set_header Host $host`），任何公网访问者只要发 `Host: 127.0.0.1` 就会被当成回环请求，**跳过 `admit()`**，无需登录即可：
+
+- 读写 `/api/dsh-skill-explorer/*`（可创建技能文件，内容会进入模型上下文）
+- 读取 `/dsh-better-reasoning-effort/headers-config` 等诊断数据
+- 让 `/bili/origin` 泄漏回环 origin `http://127.0.0.1:<port>`
+
+现在判定「本地直连」看**请求有没有经过反代**：socket 对端地址属于 127/8 或 `::1`，**且**不带任何 `X-Forwarded-*` / `X-Real-IP` / `Forwarded` 标记。反代必然会写这些头，且 `proxy_set_header` 是**替换**而非追加，所以远端无法伪造。本地直连请求完全不改写，交还各插件自己的信任规则决定：
+
+- `dsh-better-reasoning-effort`：回环**或任意 IP 字面量** Host；
+- `@linxin666/dsh-client-ui-skill-explorer`：socket 回环**且** Host 回环（按 IP 访问本就 403，属其自身设计）。
+
+这样既堵住绕过，又不会像只认回环 Host 那样误伤 IP 字面量访问。
+
+### 附带效果
+
+bili 原本未登录也能读取的 `/bili/origin`，在公网访问时也要求先登录。
 
 ## 前提
 
 - DSH 以 `--trusted-host <你的域名>` 启动，这也是 DSH 本身在反代后正常工作的前提。
-- 反向代理原样传递 `Host`，并设置 `X-Forwarded-Proto`。nginx 示例：
+- **反向代理必须固定 `Host` 为公网域名，不要透传客户端 `Host`**（v0.2.1 起为硬性要求），并设置 `X-Forwarded-Proto`。nginx 示例：
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:3080;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    # 不要用 $host：它等于客户端可伪造的 Host，会让远端冒充回环访问
+    proxy_set_header Host $server_name;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade;
     proxy_buffering off;
 }
 ```
+
+`$server_name` 在该 server 块中就是公网域名，与浏览器发出的 `Host` 相同，因此 DSH 签名 Cookie 的 authority 不变，现有登录不受影响。
 
 ## 安装
 

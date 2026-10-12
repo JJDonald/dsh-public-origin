@@ -1,6 +1,6 @@
 {
   "name": "dsh-public-origin",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Lets loopback-assuming DSH plugins (bili, reasoning-effort, skill-explorer) work when the Web UI is served on a public domain behind a reverse proxy, gated by dsh's own login.",
   "license": "MIT",
   "repository": {
